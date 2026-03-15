@@ -41,6 +41,86 @@
         </div>
       </div>
 
+      <!-- Step 01b: Real-People Enrichment Pipeline (real-people mode only) -->
+      <div v-if="useRealPeople" class="step-card" :class="{ 'active': enrichmentPhase !== 'done' && enrichmentPhase !== 'failed', 'completed': enrichmentPhase === 'done' }">
+        <div class="card-header">
+          <div class="step-info">
+            <span class="step-num">01b</span>
+            <span class="step-title">Real-People Enrichment Pipeline</span>
+          </div>
+          <div class="step-status">
+            <span v-if="enrichmentPhase === 'done'" class="badge success">Complete</span>
+            <span v-else-if="enrichmentPhase === 'failed'" class="badge error">Failed</span>
+            <span v-else class="badge processing">{{ enrichmentPhaseLabel }}</span>
+          </div>
+        </div>
+
+        <div class="card-content">
+          <p class="api-note">GET /api/simulation/:id/groups/status</p>
+          <p class="description">
+            Nyne enrichment → real-post opinion extraction → grounded persona building
+          </p>
+
+          <!-- Phase progress bar -->
+          <div class="enrich-phases">
+            <div class="enrich-phase" :class="{ active: ['enriching','opinions','personas','done'].includes(enrichmentPhase), done: ['opinions','personas','done'].includes(enrichmentPhase) }">
+              <span class="phase-dot"></span><span class="phase-label">Nyne Enrichment</span>
+            </div>
+            <div class="enrich-phase" :class="{ active: ['opinions','personas','done'].includes(enrichmentPhase), done: ['personas','done'].includes(enrichmentPhase) }">
+              <span class="phase-dot"></span><span class="phase-label">Opinion Extraction</span>
+            </div>
+            <div class="enrich-phase" :class="{ active: ['personas','done'].includes(enrichmentPhase), done: enrichmentPhase === 'done' }">
+              <span class="phase-dot"></span><span class="phase-label">Persona Building</span>
+            </div>
+          </div>
+
+          <!-- Member stats bar -->
+          <div v-if="enrichmentMembers.length > 0" class="enrich-stats">
+            <div class="enrich-stat"><span class="estat-val">{{ enrichmentMembers.length }}</span><span class="estat-label">Total</span></div>
+            <div class="enrich-stat success"><span class="estat-val">{{ enrichedCount }}</span><span class="estat-label">Enriched</span></div>
+            <div class="enrich-stat processing"><span class="estat-val">{{ enrichingCount }}</span><span class="estat-label">Enriching</span></div>
+            <div class="enrich-stat synthetic"><span class="estat-val">{{ syntheticCount }}</span><span class="estat-label">Synthetic</span></div>
+            <div v-if="failedCount > 0" class="enrich-stat error"><span class="estat-val">{{ failedCount }}</span><span class="estat-label">Failed</span></div>
+          </div>
+
+          <!-- Member grid -->
+          <div v-if="enrichmentMembers.length > 0" class="member-grid">
+            <div
+              v-for="(m, idx) in enrichmentMembers"
+              :key="idx"
+              class="member-chip"
+              :class="m.status"
+              :title="`${m.name} — ${m.group_name} — ${m.status}`"
+            >
+              <span class="chip-name">{{ m.name }}</span>
+              <span class="chip-status-dot" :class="m.status"></span>
+            </div>
+          </div>
+
+          <!-- Grounding report summary -->
+          <div v-if="groundingReport" class="grounding-summary">
+            <div class="grounding-header">
+              <span class="grounding-title">Grounding Report</span>
+              <span class="grounding-score">{{ ((groundingReport.overall_grounding || 0) * 100).toFixed(0) }}% grounded</span>
+            </div>
+            <div class="grounding-groups">
+              <div v-for="g in (groundingReport.groups || [])" :key="g.name" class="grounding-group">
+                <span class="gg-name">{{ g.name }}</span>
+                <div class="gg-members">
+                  <span
+                    v-for="m in (g.members || [])"
+                    :key="m.name"
+                    class="gg-member"
+                    :class="'gl-' + m.grounding_level"
+                    :title="`${m.name}: ${m.grounding_level} grounding — ${m.real_posts_found || 0} posts — stance: ${m.stance}`"
+                  >{{ m.name.split(' ')[0] }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Step 02: 生成 Agent 人设 -->
       <div class="step-card" :class="{ 'active': phase === 1, 'completed': phase > 1 }">
         <div class="card-header">
@@ -633,19 +713,22 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { 
-  prepareSimulation, 
-  getPrepareStatus, 
+import {
+  prepareSimulation,
+  getPrepareStatus,
   getSimulationProfilesRealtime,
   getSimulationConfig,
-  getSimulationConfigRealtime 
+  getSimulationConfigRealtime,
+  getGroupsStatus,
+  getGroundingReport,
 } from '../api/simulation'
 
 const props = defineProps({
   simulationId: String,  // 从父组件传入
   projectData: Object,
   graphData: Object,
-  systemLogs: Array
+  systemLogs: Array,
+  useRealPeople: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status'])
@@ -662,6 +745,11 @@ const expectedTotal = ref(null)
 const simulationConfig = ref(null)
 const selectedProfile = ref(null)
 const showProfilesDetail = ref(true)
+
+// Real-people enrichment state (only used when useRealPeople=true)
+const enrichmentMembers = ref([])   // array of { name, role, source, status, group_name }
+const groundingReport = ref(null)
+const enrichmentPhase = ref('pending') // 'pending' | 'enriching' | 'opinions' | 'personas' | 'done' | 'failed'
 
 // 日志去重：记录上一次输出的关键信息
 let lastLoggedMessage = ''
@@ -703,10 +791,11 @@ const autoGeneratedRounds = computed(() => {
   return Math.max(calculatedRounds, 40)
 })
 
-// Polling timer
+// Polling timers
 let pollTimer = null
 let profilesTimer = null
 let configTimer = null
+let enrichTimer = null
 
 // Computed
 const displayProfiles = computed(() => {
@@ -1055,6 +1144,107 @@ const loadPreparedData = async () => {
   }
 }
 
+// ─── Real-people enrichment polling ────────────────────────────────────────
+
+const startEnrichmentPolling = () => {
+  if (enrichTimer) return
+  enrichTimer = setInterval(fetchEnrichmentStatus, 3000)
+  fetchEnrichmentStatus()
+}
+
+const stopEnrichmentPolling = () => {
+  if (enrichTimer) {
+    clearInterval(enrichTimer)
+    enrichTimer = null
+  }
+}
+
+const fetchEnrichmentStatus = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await getGroupsStatus(props.simulationId)
+    if (!res.success || !res.data) return
+
+    const data = res.data
+    // Flatten all members across groups into a flat list with group label
+    const members = []
+    for (const group of (data.groups || [])) {
+      for (const m of (group.members || [])) {
+        members.push({
+          name: m.name,
+          role: m.role || '',
+          source: m.source || 'unknown',
+          status: m.enrichment_status || 'pending',
+          group_name: group.name || '',
+        })
+      }
+    }
+    enrichmentMembers.value = members
+
+    // Derive current enrichment phase from overall pipeline status
+    const stage = data.current_stage || ''
+    if (stage.includes('ENRICHING') || stage === 'enriching') {
+      enrichmentPhase.value = 'enriching'
+    } else if (stage.includes('EXTRACTING') || stage === 'extracting_opinions') {
+      enrichmentPhase.value = 'opinions'
+    } else if (stage.includes('BUILDING') || stage === 'building_personas') {
+      enrichmentPhase.value = 'personas'
+    } else if (stage === 'READY' || stage === 'ready') {
+      enrichmentPhase.value = 'done'
+      stopEnrichmentPolling()
+      // Load grounding report once done
+      loadGroundingReport()
+    } else if (stage === 'FAILED' || stage === 'failed') {
+      enrichmentPhase.value = 'failed'
+      stopEnrichmentPolling()
+    }
+  } catch (err) {
+    console.warn('Enrichment status poll failed:', err)
+  }
+}
+
+const loadGroundingReport = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await getGroundingReport(props.simulationId)
+    if (res.success && res.data) {
+      groundingReport.value = res.data
+      const g = res.data
+      addLog(`✓ Grounding report ready — overall grounding: ${((g.overall_grounding || 0) * 100).toFixed(0)}%`)
+      addLog(`  ├─ Real people: ${g.real_people_count || 0}, Synthetic fallback: ${g.synthetic_fallback_count || 0}`)
+    }
+  } catch (err) {
+    console.warn('Could not load grounding report:', err)
+  }
+}
+
+// ─── Computed helpers for enrichment grid ───────────────────────────────────
+
+const enrichedCount = computed(() =>
+  enrichmentMembers.value.filter(m => m.status === 'complete').length
+)
+const enrichingCount = computed(() =>
+  enrichmentMembers.value.filter(m => m.status === 'enriching').length
+)
+const failedCount = computed(() =>
+  enrichmentMembers.value.filter(m => m.status === 'failed').length
+)
+const syntheticCount = computed(() =>
+  enrichmentMembers.value.filter(m => m.source === 'synthetic_fallback').length
+)
+
+const enrichmentPhaseLabelMap = {
+  pending:    'Waiting to start',
+  enriching:  'Nyne enrichment in progress',
+  opinions:   'Extracting opinions from real posts',
+  personas:   'Building grounded personas',
+  done:       'Complete',
+  failed:     'Failed',
+}
+const enrichmentPhaseLabel = computed(() => enrichmentPhaseLabelMap[enrichmentPhase.value] || enrichmentPhase.value)
+
+// ─── End real-people enrichment ─────────────────────────────────────────────
+
 // Scroll log to bottom
 const logContent = ref(null)
 watch(() => props.systemLogs?.length, () => {
@@ -1066,9 +1256,12 @@ watch(() => props.systemLogs?.length, () => {
 })
 
 onMounted(() => {
-  // 自动开始准备流程
   if (props.simulationId) {
     addLog('Step2 环境搭建初始化')
+    if (props.useRealPeople) {
+      addLog('Real-people mode detected — monitoring enrichment pipeline...')
+      startEnrichmentPolling()
+    }
     startPrepareSimulation()
   }
 })
@@ -1077,6 +1270,7 @@ onUnmounted(() => {
   stopPolling()
   stopProfilesPolling()
   stopConfigPolling()
+  stopEnrichmentPolling()
 })
 </script>
 
@@ -2599,4 +2793,154 @@ onUnmounted(() => {
   transform: scale(0.95) translateY(10px);
   opacity: 0;
 }
+
+/* ─── Real-people enrichment styles ─────────────────────────────────────── */
+
+.enrich-phases {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.enrich-phase {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: #f0f0f0;
+  font-size: 12px;
+  color: #888;
+  transition: all 0.3s;
+}
+.enrich-phase.active {
+  background: #e8f4fd;
+  color: #1976D2;
+}
+.enrich-phase.done {
+  background: #e8f5e9;
+  color: #388E3C;
+}
+
+.phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.enrich-stats {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.enrich-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 56px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+}
+.enrich-stat.success  { background: #e8f5e9; border-color: #81C784; }
+.enrich-stat.processing { background: #e3f2fd; border-color: #64B5F6; }
+.enrich-stat.synthetic { background: #fff8e1; border-color: #FFD54F; }
+.enrich-stat.error    { background: #ffebee; border-color: #EF9A9A; }
+
+.estat-val {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+}
+.estat-label {
+  font-size: 10px;
+  color: #888;
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.member-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.member-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  cursor: default;
+  transition: background 0.2s;
+}
+.member-chip.complete  { background: #e8f5e9; border-color: #81C784; }
+.member-chip.enriching { background: #e3f2fd; border-color: #64B5F6; }
+.member-chip.failed    { background: #ffebee; border-color: #EF9A9A; }
+.member-chip.synthetic { background: #fff8e1; border-color: #FFD54F; }
+
+.chip-name { font-size: 11px; font-weight: 500; }
+.chip-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ccc;
+  flex-shrink: 0;
+}
+.chip-status-dot.complete  { background: #66BB6A; }
+.chip-status-dot.enriching { background: #42A5F5; animation: pulse 1.2s infinite; }
+.chip-status-dot.failed    { background: #EF5350; }
+.chip-status-dot.synthetic { background: #FFA726; }
+
+@keyframes pulse {
+  0%   { opacity: 1; }
+  50%  { opacity: 0.3; }
+  100% { opacity: 1; }
+}
+
+/* Grounding report */
+.grounding-summary {
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fafafa;
+}
+.grounding-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.grounding-title { font-size: 13px; font-weight: 600; color: #333; }
+.grounding-score { font-size: 13px; font-weight: 700; color: #388E3C; }
+.grounding-groups { display: flex; flex-direction: column; gap: 8px; }
+.grounding-group {}
+.gg-name { font-size: 11px; color: #888; font-weight: 500; display: block; margin-bottom: 4px; }
+.gg-members { display: flex; flex-wrap: wrap; gap: 4px; }
+.gg-member {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #eee;
+  color: #555;
+  cursor: default;
+}
+.gg-member.gl-high   { background: #c8e6c9; color: #2E7D32; }
+.gg-member.gl-medium { background: #fff9c4; color: #7B6B00; }
+.gg-member.gl-low    { background: #ffe0b2; color: #E65100; }
+.gg-member.gl-inferred { background: #ede7f6; color: #4527A0; }
+
+.badge.error { background: #ffebee; color: #c62828; }
 </style>

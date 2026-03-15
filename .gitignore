@@ -58,3 +58,10 @@ backend/uploads/
 
 # Docker 数据
 data/
+
+# Nyne enrichment runtime artifacts (large, re-creatable)
+backend/data/simulations/*/nyne_enrichment/
+backend/data/simulations/*/enrichment_progress.json
+
+# Jupyter
+.ipynb_checkpoints/

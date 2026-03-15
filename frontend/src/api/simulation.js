@@ -185,3 +185,109 @@ export const getSimulationHistory = (limit = 20) => {
   return service.get('/api/simulation/history', { params: { limit } })
 }
 
+// =============================================================================
+// Real-people cast & groups API
+// =============================================================================
+
+/**
+ * Generate stakeholder groups for a simulation (LLM-proposed, user-editable)
+ * @param {string} simulationId
+ * @param {string} eventDescription - topic / event description
+ * @param {boolean} useNamedEntities - also extract entities from Zep graph
+ */
+export const generateGroups = (simulationId, eventDescription, useNamedEntities = true) => {
+  return requestWithRetry(
+    () => service.post(`/api/simulation/${simulationId}/groups/generate`, {
+      event_description: eventDescription,
+      use_named_entities: useNamedEntities,
+    }),
+    3, 1000
+  )
+}
+
+/**
+ * Get current groups list for a simulation
+ * @param {string} simulationId
+ */
+export const getGroups = (simulationId) => {
+  return service.get(`/api/simulation/${simulationId}/groups`)
+}
+
+/**
+ * Populate a group via Nyne search or direct LinkedIn URLs
+ * @param {string} simulationId
+ * @param {string} groupId
+ * @param {string} method - 'nyne_search' | 'urls'
+ * @param {Object} data - { urls?: string[], event_context?: string }
+ */
+export const populateGroup = (simulationId, groupId, method, data = {}) => {
+  return service.post(`/api/simulation/${simulationId}/groups/populate`, {
+    group_id: groupId,
+    method,
+    ...data,
+  })
+}
+
+/**
+ * Populate a group via CSV file upload
+ * @param {string} simulationId
+ * @param {string} groupId
+ * @param {File} file - CSV file with a LinkedIn URL column
+ */
+export const uploadGroupCSV = (simulationId, groupId, file) => {
+  const formData = new FormData()
+  formData.append('group_id', groupId)
+  formData.append('file', file)
+  return service.post(`/api/simulation/${simulationId}/groups/upload-csv`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+/**
+ * Get real-time groups + enrichment progress (poll this during enrichment)
+ * @param {string} simulationId
+ */
+export const getGroupsStatus = (simulationId) => {
+  return service.get(`/api/simulation/${simulationId}/groups/status`)
+}
+
+/**
+ * Approve the cast and trigger the full enrichment + persona pipeline
+ * @param {string} simulationId
+ * @param {string} simulationRequirement - topic / event description
+ * @param {string} documentText - original document text (optional)
+ */
+export const approveGroups = (simulationId, simulationRequirement, documentText = '') => {
+  return service.post(`/api/simulation/${simulationId}/groups/approve`, {
+    simulation_requirement: simulationRequirement,
+    document_text: documentText,
+  })
+}
+
+/**
+ * Update a group's name, criteria, or target_count
+ * @param {string} simulationId
+ * @param {string} groupId
+ * @param {Object} updates - { name?, criteria?, target_count? }
+ */
+export const updateGroup = (simulationId, groupId, updates) => {
+  return service.patch(`/api/simulation/${simulationId}/groups/${groupId}`, updates)
+}
+
+/**
+ * Delete a group from the cast
+ * @param {string} simulationId
+ * @param {string} groupId
+ */
+export const deleteGroup = (simulationId, groupId) => {
+  return service.delete(`/api/simulation/${simulationId}/groups/${groupId}`)
+}
+
+/**
+ * Get the grounding report (available after prepare completes)
+ * @param {string} simulationId
+ */
+export const getGroundingReport = (simulationId) => {
+  return service.get(`/api/simulation/${simulationId}/grounding-report`)
+}
+

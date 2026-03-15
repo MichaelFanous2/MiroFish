@@ -34,6 +34,14 @@ class Config:
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
+
+    # Nyne配置
+    NYNE_API_KEY = os.environ.get('NYNE_API_KEY', '')
+    NYNE_API_SECRET = os.environ.get('NYNE_API_SECRET', '')
+    NYNE_BASE_URL = 'https://api.nyne.ai'
+    NYNE_MAX_CONCURRENT = int(os.environ.get('NYNE_MAX_CONCURRENT', '10'))
+    NYNE_POLL_INTERVAL = float(os.environ.get('NYNE_POLL_INTERVAL', '4'))
+    NYNE_POLL_TIMEOUT = int(os.environ.get('NYNE_POLL_TIMEOUT', '500'))
     
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB

@@ -2709,3 +2709,413 @@ def close_simulation_env():
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+# =============================================================================
+# Real-people simulation: Cast & Groups API
+# =============================================================================
+
+@simulation_bp.route('/<simulation_id>/groups/generate', methods=['POST'])
+def generate_groups(simulation_id: str):
+    """
+    Generate stakeholder groups for this simulation using LLM.
+
+    Body (JSON):
+        event_description: str   — topic / event description (required)
+        use_named_entities: bool — also extract entities from Zep graph (default true)
+
+    Returns the proposed groups for user review. Does NOT start enrichment.
+    """
+    try:
+        manager = SimulationManager()
+        state = manager.get_simulation(simulation_id)
+        if not state:
+            return jsonify({"success": False, "error": f"Simulation not found: {simulation_id}"}), 404
+
+        data = request.get_json() or {}
+        event_description = data.get("event_description", "")
+        if not event_description:
+            return jsonify({"success": False, "error": "event_description is required"}), 400
+
+        use_named_entities = data.get("use_named_entities", True)
+
+        from ..services.nyne.cast_assembler import CastAssembler, save_groups
+        from ..services.nyne.nyne_client import NyneClient
+        from ..utils.llm_client import LLMClient
+
+        llm = LLMClient()
+        nyne = NyneClient() if Config.NYNE_API_KEY else None
+
+        assembler = CastAssembler(llm_client=llm, nyne_client=nyne)
+
+        # Extract named entities from Zep graph if requested
+        named_entities = []
+        if use_named_entities and state.graph_id and Config.ZEP_API_KEY:
+            try:
+                reader = ZepEntityReader()
+                filtered = reader.filter_defined_entities(
+                    graph_id=state.graph_id,
+                    enrich_with_edges=False,
+                )
+                named_entities = filtered.entities
+            except Exception as e:
+                logger.warning(f"Could not read Zep entities: {e}")
+
+        groups = assembler.generate_groups_from_event(
+            event_description=event_description,
+            named_entities=named_entities,
+        )
+
+        sim_dir = manager._get_simulation_dir(simulation_id)
+        save_groups(groups, sim_dir)
+
+        state.use_real_people = True
+        state.groups_generated = True
+        manager._save_simulation_state(state)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "groups": [g.to_dict() for g in groups],
+                "total_members": sum(len(g.members) for g in groups),
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"generate_groups error: {e}")
+        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@simulation_bp.route('/<simulation_id>/groups/populate', methods=['POST'])
+def populate_group(simulation_id: str):
+    """
+    Populate a specific group via Nyne search or direct LinkedIn URLs.
+
+    Body (JSON):
+        group_id: str
+        method: "nyne_search" | "urls"
+        urls: list[str]              — required if method="urls"
+        event_context: str           — optional context for Nyne search
+    """
+    try:
+        manager = SimulationManager()
+        sim_dir = manager._get_simulation_dir(simulation_id)
+
+        from ..services.nyne.cast_assembler import (
+            CastAssembler, load_groups, save_groups,
+        )
+        from ..services.nyne.nyne_client import NyneClient
+        from ..utils.llm_client import LLMClient
+
+        groups = load_groups(sim_dir)
+        if not groups:
+            return jsonify({"success": False, "error": "No groups found. Run /groups/generate first."}), 400
+
+        data = request.get_json() or {}
+        group_id = data.get("group_id")
+        method = data.get("method", "nyne_search")
+
+        target_group = next((g for g in groups if g.group_id == group_id), None)
+        if not target_group:
+            return jsonify({"success": False, "error": f"Group not found: {group_id}"}), 404
+
+        nyne = NyneClient() if Config.NYNE_API_KEY else None
+        assembler = CastAssembler(llm_client=LLMClient(), nyne_client=nyne)
+
+        if method == "urls":
+            urls = data.get("urls", [])
+            assembler.populate_group_via_urls(target_group, urls)
+        elif method == "nyne_search":
+            if not nyne:
+                return jsonify({"success": False, "error": "NYNE_API_KEY not configured"}), 500
+            event_context = data.get("event_context", "")
+            assembler.populate_group_via_nyne(target_group, event_context=event_context)
+        else:
+            return jsonify({"success": False, "error": f"Unknown method: {method}"}), 400
+
+        save_groups(groups, sim_dir)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "group_id": group_id,
+                "group": target_group.to_dict(),
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"populate_group error: {e}")
+        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@simulation_bp.route('/<simulation_id>/groups/upload-csv', methods=['POST'])
+def upload_group_csv(simulation_id: str):
+    """
+    Populate a group from a CSV file upload.
+
+    Form data:
+        group_id: str
+        file: CSV file with a LinkedIn URL column
+    """
+    try:
+        manager = SimulationManager()
+        sim_dir = manager._get_simulation_dir(simulation_id)
+
+        from ..services.nyne.cast_assembler import (
+            CastAssembler, load_groups, save_groups,
+        )
+        from ..utils.llm_client import LLMClient
+
+        groups = load_groups(sim_dir)
+        if not groups:
+            return jsonify({"success": False, "error": "No groups found. Run /groups/generate first."}), 400
+
+        group_id = request.form.get("group_id")
+        target_group = next((g for g in groups if g.group_id == group_id), None)
+        if not target_group:
+            return jsonify({"success": False, "error": f"Group not found: {group_id}"}), 404
+
+        if "file" not in request.files:
+            return jsonify({"success": False, "error": "No file uploaded"}), 400
+
+        csv_file = request.files["file"]
+        csv_content = csv_file.read().decode("utf-8", errors="replace")
+
+        assembler = CastAssembler(llm_client=LLMClient())
+        assembler.populate_group_via_csv(target_group, csv_content)
+        save_groups(groups, sim_dir)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "group_id": group_id,
+                "group": target_group.to_dict(),
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"upload_group_csv error: {e}")
+        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@simulation_bp.route('/<simulation_id>/groups/status', methods=['GET'])
+def get_groups_status(simulation_id: str):
+    """
+    Return current groups + enrichment progress.
+
+    Used for real-time polling from the frontend during enrichment.
+    """
+    try:
+        manager = SimulationManager()
+        sim_dir = manager._get_simulation_dir(simulation_id)
+
+        from ..services.nyne.cast_assembler import load_groups
+        from ..services.nyne.enrichment_pipeline import load_progress
+
+        groups = load_groups(sim_dir)
+        enrichment_progress = load_progress(sim_dir)
+
+        state = manager.get_simulation(simulation_id)
+        grounding_report = None
+        grounding_path = os.path.join(sim_dir, "grounding_report.json")
+        if os.path.exists(grounding_path):
+            import json as _json
+            with open(grounding_path, "r", encoding="utf-8") as f:
+                grounding_report = _json.load(f)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "status": state.status.value if state else "unknown",
+                "groups": [g.to_dict() for g in groups],
+                "enrichment_progress": enrichment_progress,
+                "grounding_report": grounding_report,
+                "total_members": sum(len(g.members) for g in groups),
+                "enriched_count": sum(1 for p in enrichment_progress if p.get("status") == "complete"),
+                "groups_approved": state.groups_approved if state else False,
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"get_groups_status error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@simulation_bp.route('/<simulation_id>/groups/approve', methods=['POST'])
+def approve_groups(simulation_id: str):
+    """
+    User approves the cast and triggers the full real-people prepare pipeline
+    (enrichment → opinion extraction → persona building → config generation).
+
+    Body (JSON):
+        simulation_requirement: str  — topic / event description for opinion extraction
+        document_text: str           — original document text (optional, passed to config gen)
+
+    This runs async in a background thread. Poll /groups/status for progress.
+    """
+    import threading
+
+    try:
+        manager = SimulationManager()
+        state = manager.get_simulation(simulation_id)
+        if not state:
+            return jsonify({"success": False, "error": f"Simulation not found: {simulation_id}"}), 404
+
+        from ..services.nyne.cast_assembler import (
+            load_groups, CastAssembler, save_groups,
+        )
+        from ..utils.llm_client import LLMClient
+        from ..services.nyne.nyne_client import NyneClient
+
+        sim_dir = manager._get_simulation_dir(simulation_id)
+        groups = load_groups(sim_dir)
+        if not groups:
+            return jsonify({"success": False, "error": "No groups found. Run /groups/generate first."}), 400
+
+        data = request.get_json() or {}
+        simulation_requirement = data.get("simulation_requirement", "")
+        document_text = data.get("document_text", "")
+
+        # Fill any unfilled slots with synthetic fallback before approving
+        assembler = CastAssembler(llm_client=LLMClient(), nyne_client=NyneClient() if Config.NYNE_API_KEY else None)
+        for group in groups:
+            assembler.fill_synthetic_fallback(group)
+        save_groups(groups, sim_dir)
+
+        # Mark approved
+        state.groups_approved = True
+        manager._save_simulation_state(state)
+
+        # Run full pipeline in background thread
+        def run_pipeline():
+            try:
+                manager.prepare_simulation_real_people(
+                    simulation_id=simulation_id,
+                    simulation_requirement=simulation_requirement,
+                    document_text=document_text,
+                    progress_callback=lambda stage, pct, msg: logger.info(
+                        f"[{simulation_id}] {stage} {pct}% — {msg}"
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Background pipeline failed for {simulation_id}: {e}")
+
+        thread = threading.Thread(target=run_pipeline, daemon=True)
+        thread.start()
+
+        total_members = sum(len(g.members) for g in groups)
+        real_count = sum(
+            1 for g in groups for m in g.members
+            if m.source != "synthetic_fallback" and m.linkedin_url
+        )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "message": "Cast approved. Enrichment pipeline started in background.",
+                "total_members": total_members,
+                "real_members": real_count,
+                "synthetic_fallback": total_members - real_count,
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"approve_groups error: {e}")
+        return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@simulation_bp.route('/<simulation_id>/groups', methods=['GET'])
+def get_groups(simulation_id: str):
+    """Return the current groups list (without enrichment progress detail)."""
+    try:
+        manager = SimulationManager()
+        sim_dir = manager._get_simulation_dir(simulation_id)
+
+        from ..services.nyne.cast_assembler import load_groups
+
+        groups = load_groups(sim_dir)
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "groups": [g.to_dict() for g in groups],
+            }
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@simulation_bp.route('/<simulation_id>/groups/<group_id>', methods=['PATCH'])
+def update_group(simulation_id: str, group_id: str):
+    """
+    Update a group's name, criteria, or target_count.
+
+    Body (JSON): any of { name, criteria, target_count }
+    """
+    try:
+        manager = SimulationManager()
+        sim_dir = manager._get_simulation_dir(simulation_id)
+
+        from ..services.nyne.cast_assembler import load_groups, save_groups
+
+        groups = load_groups(sim_dir)
+        target = next((g for g in groups if g.group_id == group_id), None)
+        if not target:
+            return jsonify({"success": False, "error": f"Group not found: {group_id}"}), 404
+
+        data = request.get_json() or {}
+        if "name" in data:
+            target.name = data["name"]
+        if "criteria" in data:
+            target.criteria = data["criteria"]
+        if "target_count" in data:
+            target.target_count = int(data["target_count"])
+
+        save_groups(groups, sim_dir)
+        return jsonify({"success": True, "data": {"group": target.to_dict()}})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@simulation_bp.route('/<simulation_id>/groups/<group_id>', methods=['DELETE'])
+def delete_group(simulation_id: str, group_id: str):
+    """Remove a group from the cast."""
+    try:
+        manager = SimulationManager()
+        sim_dir = manager._get_simulation_dir(simulation_id)
+
+        from ..services.nyne.cast_assembler import load_groups, save_groups
+
+        groups = load_groups(sim_dir)
+        groups = [g for g in groups if g.group_id != group_id]
+        save_groups(groups, sim_dir)
+
+        return jsonify({"success": True, "data": {"groups_remaining": len(groups)}})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@simulation_bp.route('/<simulation_id>/grounding-report', methods=['GET'])
+def get_grounding_report(simulation_id: str):
+    """Return the grounding report (available after prepare completes)."""
+    try:
+        manager = SimulationManager()
+        sim_dir = manager._get_simulation_dir(simulation_id)
+        report_path = os.path.join(sim_dir, "grounding_report.json")
+
+        if not os.path.exists(report_path):
+            return jsonify({"success": False, "error": "Grounding report not yet available"}), 404
+
+        import json as _json
+        with open(report_path, "r", encoding="utf-8") as f:
+            report = _json.load(f)
+
+        return jsonify({"success": True, "data": report})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
