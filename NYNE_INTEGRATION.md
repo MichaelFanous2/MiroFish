@@ -1,202 +1,262 @@
-# MiroFish × Nyne Integration — Progress & Architecture
+# MiroFish × Nyne Integration — Architecture & Status
 
-## What This Is
-
-MiroFish is a swarm intelligence social-media simulation engine (built on [OASIS/CAMEL-AI](https://github.com/camel-ai/oasis)). It extracts entities from a seed document, builds agent personas, then runs parallel Twitter + Reddit simulations to predict public opinion trajectories.
-
-This integration replaces *synthetic* LLM-fabricated personas with **real people enriched via Nyne.ai** — grounding every agent's stance, voice, and behavior in actual public posts and verified career data.
+> **Fork:** `MichaelFanous2/MiroFish` (upstream: `666ghj/MiroFish`)
+> **Last updated:** 2026-03-15
 
 ---
 
-## Architecture Overview
+## Goal
+
+Replace MiroFish's synthetic LLM-fabricated personas with **real people enriched via Nyne.ai**.
+The core architectural shift: instead of extracting named entities from an article and fabricating their personalities, we:
+
+1. Ask "who are ALL the relevant stakeholder groups for this event?" (LLM-proposed, user-editable)
+2. Populate each group with real people via Nyne search or CSV
+3. Enrich each person with their actual career history and public posts
+4. Extract their real opinions on the topic (grounded in their own words)
+5. Build personas that are constrained by verifiable evidence
+
+Every agent is now a **named real person** with their actual stance, communication style, and behavioral parameters derived from real social data. Synthetic fallback is available for any slot Nyne can't fill, clearly labeled.
+
+---
+
+## Data Flow
 
 ```
 [1] EVENT INPUT
-    Document upload OR plain-text topic
+    Document upload OR plain-text topic description
          ↓
-[2] EVENT ANALYSIS  (unchanged — Zep graph + entity extraction)
+[2] EVENT ANALYSIS  (UNCHANGED — Zep graph + entity extraction)
+    Extract: event type, key themes, named entities from document
          ↓
-[3] CAST ASSEMBLY  ← NEW STEP (Step2CastAssembly.vue)
-    LLM proposes stakeholder groups
-    ├── Named entities from doc → Nyne search by name
-    ├── Auto-generated archetypes → Nyne person search per group
-    └── User: add groups / remove / CSV upload / paste LinkedIn URLs
-    [User approves cast]
+[3] CAST ASSEMBLY  ← NEW (Step2CastAssembly.vue)
+    LLM proposes stakeholder groups:
+      ├── Named entities from document  → auto-populated from Zep
+      ├── Relevant archetypes           → populated via Nyne person search
+      └── User additions                → CSV upload | LinkedIn URL paste
+    User reviews, edits groups, adjusts counts, then approves.
          ↓
-[4] NYNE ENRICHMENT PIPELINE  ← NEW (parallel async, background thread)
-    Per cast member with a LinkedIn URL:
+[4] NYNE ENRICHMENT PIPELINE  ← NEW (async, background thread)
+    For each cast member with a LinkedIn URL:
       → career history, current role, education, skills
-      → newsfeed (LinkedIn + Twitter posts)
-      → social follower/connection counts
+      → newsfeed (actual LinkedIn + Twitter posts)
+      → follower / connection counts
       → interest clusters (psychographic)
-    Synthetic fallback for any Nyne gap
+    Synthetic fallback fires for any unfilled slot → labeled "synthetic_fallback"
          ↓
 [5] OPINION EXTRACTION  ← NEW
-    Per person + topic:
-      → filter newsfeed for topic-relevant posts
-      → LLM synthesis CONSTRAINED by actual post evidence
-      → stance, sentiment_bias, grounding_level, key_positions (cited)
+    Per person + event topic:
+      → keyword + LLM semantic filter of newsfeed for topic-relevant posts
+      → LLM synthesis constrained ONLY to evidence from actual posts
+      → stance, sentiment_bias, confidence, key_positions (with citation URLs)
+      → grounding_level: "high" (3+ posts) | "medium" (1-2) | "low" | "inferred"
          ↓
 [6] REAL PERSONA BUILDER  ← NEW (replaces OasisProfileGenerator for real people)
     NynePersonData + PersonOpinionProfile → OasisAgentProfile
-      → 1200-word persona narrative constrained by real facts
-      → behavioral params derived from real social data
+      → 1200-word persona narrative constrained by verified facts
+      → follower_count     ← real Twitter followers
+      → friend_count       ← real LinkedIn connections
+      → influence_weight   = log10(followers + 1) / 6
+      → activity_level     = min(len(newsfeed) / 30, 1.0)
+      → active_hours       ← inferred from post timestamps
+      → sentiment_bias     ← from PersonOpinionProfile (real post evidence)
+      → stance             ← from PersonOpinionProfile (real post evidence)
+    Synthetic members delegate to existing OasisProfileGenerator (unchanged).
          ↓
-[7] OASIS SIMULATION  (unchanged)
+[7] OASIS SIMULATION  (COMPLETELY UNCHANGED)
+    Twitter + Reddit parallel simulation
          ↓
 [8] REPORT + GROUNDING REPORT  ← enhanced
-    Real citations to actual posts as evidence
+    grounding_report.json saved per simulation.
+    Surfaces real citations as evidence for each predicted behavior.
 ```
 
 ---
 
-## What Was Built
+## Completed Work
 
-### New Backend Services
+### New backend services
 
-| File | Status | Description |
-|------|--------|-------------|
-| `backend/app/services/nyne/__init__.py` | ✅ Done | Package marker |
-| `backend/app/services/nyne/nyne_client.py` | ✅ Done | Nyne API wrapper with async submit→poll pattern. `NynePersonData` dataclass + `NyneClient` with `enrich_person`, `search_person`, `batch_enrich`. Auth via `NYNE_API_KEY` + `NYNE_API_SECRET`. |
-| `backend/app/services/nyne/cast_assembler.py` | ✅ Done | `StakeholderGroup` + `CastMember` dataclasses. `CastAssembler` generates groups via LLM, populates via Nyne search / CSV / direct URLs, fills synthetic fallbacks. Persists to `cast_groups.json`. |
-| `backend/app/services/nyne/enrichment_pipeline.py` | ✅ Done | `EnrichmentPipeline.run()` — parallel async enrichment via `ThreadPoolExecutor`. Saves per-person `NynePersonData` to `nyne_enrichment/{hash}.json` incrementally. Tracks progress in `enrichment_progress.json`. |
-| `backend/app/services/nyne/opinion_extractor.py` | ✅ Done | `PersonOpinionProfile` dataclass. `OpinionExtractor.extract()` — keyword + LLM semantic filter of newsfeed, LLM synthesis constrained to actual post evidence, `grounding_level` assignment. |
-| `backend/app/services/persona/__init__.py` | ✅ Done | Package marker |
-| `backend/app/services/persona/real_persona_builder.py` | ✅ Done | `RealPersonaBuilder.build()` → `OasisAgentProfile`. Field mapping: real Twitter followers → `follower_count`, real LinkedIn connections → `friend_count`, `log10(followers+1)/6` → `influence_weight`, post timestamps → `active_hours`, real posts → `sentiment_bias`/`stance`. Falls back to `OasisProfileGenerator` for synthetic members. |
+| File | Description |
+|------|-------------|
+| `backend/app/services/nyne/__init__.py` | Package marker |
+| `backend/app/services/nyne/nyne_client.py` | Nyne API wrapper. Async submit→poll pattern (mirrors `nyne_batch_enrich.py`). `NynePersonData` dataclass with `linkedin_url`, `name`, `career_history`, `newsfeed`, `twitter_followers`, `linkedin_connections`, `interests`, etc. `NyneClient` with `enrich_person`, `get_interests`, `search_person`, `batch_enrich`. Auth via `NYNE_API_KEY` + `NYNE_API_SECRET`. Poll interval 4s, timeout 500s. |
+| `backend/app/services/nyne/cast_assembler.py` | `StakeholderGroup` + `CastMember` dataclasses. `CastAssembler.generate_groups_from_event()` — LLM proposes groups from event description + named entities. `populate_group_via_nyne()`, `populate_group_via_csv()` (auto-detects LinkedIn URL column), `populate_group_via_urls()`, `fill_synthetic_fallback()`. Persists to `cast_groups.json`. |
+| `backend/app/services/nyne/enrichment_pipeline.py` | `EnrichmentPipeline.run()` — parallel async enrichment via `ThreadPoolExecutor` (default 10 workers). Saves each `NynePersonData` to `nyne_enrichment/{md5_hash}.json` incrementally as they complete. Progress tracked in `enrichment_progress.json`. `EnrichmentProgress` dataclass tracks per-member status: `"pending" | "enriching" | "complete" | "failed" | "synthetic"`. |
+| `backend/app/services/nyne/opinion_extractor.py` | `PersonOpinionProfile` dataclass: `stance`, `sentiment_bias` (-1 to 1), `confidence`, `key_positions` (cited), `relevant_posts`, `grounding_level`, `advocacy_style`. `OpinionExtractor.extract()`: (1) keyword + LLM semantic filter of newsfeed, (2) LLM synthesis constrained to actual posts only — explicitly forbidden from inventing positions, (3) grounding_level assignment. `extract_batch()` for parallel processing. |
+| `backend/app/services/persona/__init__.py` | Package marker |
+| `backend/app/services/persona/real_persona_builder.py` | `RealPersonaBuilder.build(person, opinion, user_id, topic)` → `OasisAgentProfile`. All behavioral params derived from real data. LLM writes 1200-word persona narrative with explicit rules: quote actual posts, no invented positions, hedged language for gaps. Private `_activity_level`, `_stance`, `_sentiment_bias`, `_influence_weight` attributes attached for `SimulationConfigGenerator` patching. Synthetic members delegated to existing `OasisProfileGenerator`. |
 
-### Modified Backend Files
+### Modified backend files
 
-| File | Change |
-|------|--------|
-| `backend/app/config.py` | Added `NYNE_API_KEY`, `NYNE_API_SECRET`, `NYNE_BASE_URL`, `NYNE_MAX_CONCURRENT`, `NYNE_POLL_INTERVAL`, `NYNE_POLL_TIMEOUT` |
-| `backend/app/services/simulation_manager.py` | Added `SimulationStatus` enum values (`CASTING`, `ENRICHING`, `EXTRACTING_OPINIONS`, `BUILDING_PERSONAS`). Added `use_real_people`, `groups_generated`, `groups_approved`, `enrichment_complete` to `SimulationState`. Added `prepare_simulation_real_people()` pipeline method. Added `_save_grounding_report()`. |
-| `backend/app/api/simulation.py` | Added 8 new endpoints (additive — zero existing endpoints changed): `groups/generate`, `groups/populate`, `groups/upload-csv`, `groups/status`, `groups/approve`, `groups/:id` (PATCH/DELETE), `grounding-report`. |
-| `backend/.env.example` | Created with full env var documentation |
+| File | Changes |
+|------|---------|
+| `backend/app/config.py` | Added `NYNE_API_KEY`, `NYNE_API_SECRET`, `NYNE_BASE_URL`, `NYNE_MAX_CONCURRENT` (default 10), `NYNE_POLL_INTERVAL` (default 4s), `NYNE_POLL_TIMEOUT` (default 500s). All from env vars with safe defaults. |
+| `backend/app/services/simulation_manager.py` | New `SimulationStatus` values: `CASTING`, `ENRICHING`, `EXTRACTING_OPINIONS`, `BUILDING_PERSONAS`. New `SimulationState` fields: `use_real_people`, `groups_generated`, `groups_approved`, `enrichment_complete` — all backward-compatible with fallback defaults. New method `prepare_simulation_real_people()`: full pipeline (load groups → enrich → extract opinions → build personas → generate config → patch real activity/stance → save profiles → save grounding report → mark READY). New `_save_grounding_report()` writes `grounding_report.json` with per-group, per-member citations and `overall_grounding` score. |
+| `backend/app/api/simulation.py` | 8 new endpoints appended (zero existing endpoints modified): `POST /:id/groups/generate`, `GET /:id/groups`, `PATCH /:id/groups/:gid`, `DELETE /:id/groups/:gid`, `POST /:id/groups/populate`, `POST /:id/groups/upload-csv`, `GET /:id/groups/status`, `POST /:id/groups/approve`, `GET /:id/grounding-report`. |
+| `backend/.env.example` | Created with full env var documentation including Nyne section. |
 
-### New Frontend Components
+### New frontend components
 
-| File | Status | Description |
-|------|--------|-------------|
-| `frontend/src/components/Step2CastAssembly.vue` | ✅ Done | Full Vue 3 Composition API component. 3 phases: (01) Generate Groups — LLM proposes stakeholder groups, (02) Review & Curate Cast — group cards with member lists, per-group CSV/URL/Nyne-search input, add/remove groups, (03) Enrichment Progress — status grid polling `/groups/status`. Emits `cast-approved` when enrichment completes. |
+| File | Description |
+|------|-------------|
+| `frontend/src/components/Step2CastAssembly.vue` | Vue 3 Composition API. 3 phases: **(01) Generate Groups** — calls `generateGroups()`, shows LLM-proposed group cards with member counts; **(02) Review & Curate Cast** — group cards with member lists (name, role, source badge), per-group inline URL input, CSV file upload, "Search Nyne" button placeholder, add custom group form, delete group; summary bar (groups / real / synthetic / total); "Approve Cast & Start Enrichment" CTA; **(03) Enrichment Progress** — polls `/groups/status` every 3s, shows member status grid with colored chips (Nyne / CSV / synthetic / failed). Emits `cast-approved` event when enrichment completes. |
 
-### Modified Frontend Files
+### Modified frontend files
 
-| File | Change |
-|------|--------|
-| `frontend/src/api/simulation.js` | Added `generateGroups`, `getGroups`, `populateGroup`, `uploadGroupCSV`, `getGroupsStatus`, `approveGroups`, `updateGroup`, `deleteGroup`, `getGroundingReport` |
-| `frontend/src/components/Step2EnvSetup.vue` | Added `useRealPeople` prop. When true: shows Step 01b enrichment progress card with phase bar, member status grid (enriching/complete/failed/synthetic chips), grounding report summary. Polls `/groups/status` every 3s. |
-
----
-
-## Data Flow — Grounding Levels
-
-Every opinion is labeled with how much real-post evidence backs it:
-
-| Level | Meaning |
-|-------|---------|
-| `high` | 3+ direct relevant posts found |
-| `medium` | 1-2 relevant posts found |
-| `low` | No direct posts, but interests/follows suggest alignment |
-| `inferred` | No evidence — LLM inference only, clearly labeled |
-
-These propagate into `grounding_report.json` (saved per simulation) and are surfaced in the UI.
+| File | Changes |
+|------|---------|
+| `frontend/src/api/simulation.js` | Added: `generateGroups`, `getGroups`, `populateGroup`, `uploadGroupCSV`, `getGroupsStatus`, `approveGroups`, `updateGroup`, `deleteGroup`, `getGroundingReport`. All follow existing `service.get/post/patch/delete` + `requestWithRetry` patterns. |
+| `frontend/src/components/Step2EnvSetup.vue` | Added `useRealPeople: Boolean` prop. When `true`: (a) enrichment polling starts on mount, (b) new Step 01b card visible — shows phase progress bar (Enrichment → Opinion Extraction → Persona Building), live member status grid with animated chips (`enriching` pulses blue, `complete` green, `synthetic` yellow, `failed` red), grounding report summary once pipeline completes. Added imports for `getGroupsStatus` and `getGroundingReport`. All existing logic unchanged when `useRealPeople=false`. |
 
 ---
 
 ## API Endpoints Added
 
-```
-POST   /api/simulation/:id/groups/generate      — LLM proposes stakeholder groups
-GET    /api/simulation/:id/groups               — get current group list
-PATCH  /api/simulation/:id/groups/:gid          — update group name/criteria/count
-DELETE /api/simulation/:id/groups/:gid          — remove a group
-POST   /api/simulation/:id/groups/populate      — populate group via nyne_search or urls
-POST   /api/simulation/:id/groups/upload-csv    — populate group via CSV file
-GET    /api/simulation/:id/groups/status        — real-time enrichment progress polling
-POST   /api/simulation/:id/groups/approve       — approve cast, trigger enrichment pipeline
-GET    /api/simulation/:id/grounding-report     — get grounding report after prep completes
-```
+All additive — zero existing endpoints changed.
 
-All existing endpoints are **unchanged** — this is a fully additive integration.
+```
+POST   /api/simulation/:id/groups/generate      LLM proposes stakeholder groups
+GET    /api/simulation/:id/groups               Get current group list
+PATCH  /api/simulation/:id/groups/:gid          Update group name / criteria / target_count
+DELETE /api/simulation/:id/groups/:gid          Remove a group
+POST   /api/simulation/:id/groups/populate      Populate group via nyne_search or urls
+POST   /api/simulation/:id/groups/upload-csv    Populate group via CSV file upload
+GET    /api/simulation/:id/groups/status        Real-time enrichment progress (poll this)
+POST   /api/simulation/:id/groups/approve       Approve cast, triggers enrichment pipeline
+GET    /api/simulation/:id/grounding-report     Grounding report (available after READY)
+```
 
 ---
 
-## Key Design Decisions
+## Grounding Levels
 
-**1. Population-based casting, not entity-extraction**
-The old flow enriched whatever named entities appeared in the article. This flow lets the user define *who are ALL relevant stakeholders* — even people never mentioned in the document.
+Every opinion is labeled with how much real-post evidence supports it:
 
-**2. Real people, named**
-Agents simulate with their real name, real career background, and opinions derived from their actual public posts. No anonymization.
-
-**3. Synthetic fallback, clearly labeled**
-Any slot Nyne can't fill gets an LLM-generated synthetic persona tagged `source: "synthetic_fallback"`. These are visually distinct in the UI and labeled in the grounding report.
-
-**4. Opinion grounding is constrained**
-The `OpinionExtractor` LLM prompt explicitly forbids inventing stances not evidenced by actual posts. If evidence is thin, the output says so — the `grounding_level` field reflects this.
-
-**5. Backward compatible**
-The existing synthetic preparation pipeline (`POST /api/simulation/prepare`) is untouched. Pass `use_real_people: false` (or just don't use the cast assembly step) to get the original behavior.
+| Level | Meaning | Color in UI |
+|-------|---------|-------------|
+| `high` | 3+ topic-relevant public posts found | Green |
+| `medium` | 1–2 relevant posts found | Yellow |
+| `low` | No direct posts, interests/follows suggest alignment | Orange |
+| `inferred` | No evidence — LLM inference only, clearly labeled | Purple |
 
 ---
 
-## Environment Variables Required
+## Design Decisions
 
-```bash
-# Nyne API credentials
-NYNE_API_KEY=your_nyne_api_key
-NYNE_API_SECRET=your_nyne_api_secret
+**Named real people, not anonymized.** Agents simulate with their real name and background. The system is designed for researchers and practitioners who need attribution.
 
-# Optional tuning
-NYNE_MAX_CONCURRENT=10     # parallel enrichment threads
-NYNE_POLL_INTERVAL=4       # seconds between Nyne status polls
-NYNE_POLL_TIMEOUT=500      # max seconds to wait for Nyne job
-```
+**Synthetic fallback is always available.** Any slot Nyne can't fill (no LinkedIn URL match, enrichment failure) falls back to an LLM-generated persona tagged `source: "synthetic_fallback"`. These are visually distinct in the UI and counted separately in the grounding report.
+
+**Opinion grounding is hard-constrained.** The `OpinionExtractor` LLM prompt explicitly forbids inventing stances not evidenced by actual posts. When evidence is thin, it says so. `grounding_level` is the primary trust signal.
+
+**Fully backward-compatible.** The existing synthetic preparation pipeline (`POST /api/simulation/prepare`, `OasisProfileGenerator`, all existing API endpoints) is untouched. Not using the cast assembly step produces identical behavior to the original MiroFish.
+
+**File-based persistence matching existing patterns.** All new state (groups, enrichment progress, grounding report) is stored as JSON files alongside existing simulation data. No new dependencies.
 
 ---
 
 ## What Remains To Wire Up
 
-The backend and frontend modules are complete. To make the full flow work end-to-end:
+These are the only remaining steps before the full flow is functional end-to-end:
 
-1. **Wire `Step2CastAssembly.vue` into the parent wizard** (`App.vue` or equivalent): insert it as the new Step 2, passing `simulationId` from Step 1 (env setup), and listening for `cast-approved` to advance to Step 3.
+### 1. Wire `Step2CastAssembly.vue` into the parent wizard
 
-2. **Pass `useRealPeople` flag** into `Step2EnvSetup.vue` from the wizard when the user came through the cast assembly path.
+In `App.vue` (or whatever manages step transitions), insert `Step2CastAssembly` as a new step between the graph-building step and `Step2EnvSetup`. Pass `simulationId` as a prop and listen for `cast-approved`:
 
-3. **Test with a real Nyne API key** — the enrichment pipeline is written against the live Nyne API contract (matching `nyne_enrich/nyne_batch_enrich.py`), but has not yet been run end-to-end.
+```vue
+<Step2CastAssembly
+  v-if="currentStep === 'cast'"
+  :simulationId="simulationId"
+  :eventDescription="projectData.event_description"
+  @cast-approved="onCastApproved"
+/>
+```
 
-4. **Verify `SimulationConfigGenerator` patching** in `simulation_manager.py` — the `_activity_level`, `_stance`, `_sentiment_bias` attributes attached to `OasisAgentProfile` objects need to be confirmed to propagate correctly into the OASIS `AgentActivityConfig` objects.
+```js
+const onCastApproved = () => {
+  useRealPeople.value = true
+  currentStep.value = 'env-setup'
+}
+```
+
+### 2. Pass `useRealPeople` prop into `Step2EnvSetup`
+
+```vue
+<Step2EnvSetup
+  :simulationId="simulationId"
+  :projectData="projectData"
+  :useRealPeople="useRealPeople"
+  ...
+/>
+```
+
+### 3. Test with a live Nyne API key
+
+Set in your `.env`:
+```env
+NYNE_API_KEY=your_nyne_api_key
+NYNE_API_SECRET=your_nyne_api_secret
+```
+
+The enrichment pipeline is written against the live Nyne API contract (matching `nyne_enrich/nyne_batch_enrich.py`) but has not yet been run end-to-end against the production API.
+
+### 4. Verify SimulationConfigGenerator patching
+
+In `simulation_manager.py`, `prepare_simulation_real_people()` attaches private attributes (`_activity_level`, `_stance`, `_sentiment_bias`, `_influence_weight`) to `OasisAgentProfile` objects and then patches them into `AgentActivityConfig` objects after config generation. Verify this works with the version of `SimulationConfigGenerator` in your environment.
 
 ---
 
-## File Tree — New Files Only
+## File Tree (new files only)
 
 ```
 MiroFish/
-├── NYNE_INTEGRATION.md              ← this file
-├── .gitignore                       ← updated with Nyne runtime artifacts
+├── NYNE_INTEGRATION.md                          ← this file
+├── .gitignore                                   ← updated (Nyne runtime artifacts)
+├── README.md                                    ← updated (Nyne section added)
 ├── backend/
-│   ├── .env.example                 ← NEW: full env var documentation
+│   ├── .env.example                             ← NEW
 │   └── app/
-│       ├── config.py                ← modified: Nyne config block
+│       ├── config.py                            ← modified
 │       ├── api/
-│       │   └── simulation.py        ← modified: 8 new endpoints appended
+│       │   └── simulation.py                    ← modified (8 endpoints appended)
 │       └── services/
-│           ├── simulation_manager.py ← modified: real-people pipeline
-│           ├── nyne/                 ← NEW package
+│           ├── simulation_manager.py            ← modified
+│           ├── nyne/                            ← NEW package
 │           │   ├── __init__.py
-│           │   ├── nyne_client.py
-│           │   ├── cast_assembler.py
-│           │   ├── enrichment_pipeline.py
-│           │   └── opinion_extractor.py
-│           └── persona/              ← NEW package
+│           │   ├── nyne_client.py               — Nyne API wrapper
+│           │   ├── cast_assembler.py            — group/cast assembly
+│           │   ├── enrichment_pipeline.py       — parallel async enrichment
+│           │   └── opinion_extractor.py         — opinion grounding
+│           └── persona/                         ← NEW package
 │               ├── __init__.py
-│               └── real_persona_builder.py
+│               └── real_persona_builder.py      — NynePersonData → OasisAgentProfile
 └── frontend/
     └── src/
         ├── api/
-        │   └── simulation.js         ← modified: 9 new API functions
+        │   └── simulation.js                    ← modified (9 functions added)
         └── components/
-            ├── Step2CastAssembly.vue  ← NEW: cast assembly wizard step
-            └── Step2EnvSetup.vue      ← modified: real-people enrichment UI
+            ├── Step2CastAssembly.vue            ← NEW
+            └── Step2EnvSetup.vue                ← modified
+```
+
+---
+
+## Environment Variables
+
+```env
+# Required for real-people mode
+NYNE_API_KEY=your_nyne_api_key
+NYNE_API_SECRET=your_nyne_api_secret
+
+# Optional tuning (defaults shown)
+NYNE_MAX_CONCURRENT=10     # parallel enrichment threads
+NYNE_POLL_INTERVAL=4       # seconds between Nyne status polls
+NYNE_POLL_TIMEOUT=500      # max seconds to wait for a Nyne job
+
+# Existing required vars (unchanged)
+LLM_API_KEY=...
+LLM_BASE_URL=...
+LLM_MODEL_NAME=...
+ZEP_API_KEY=...
 ```

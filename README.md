@@ -192,6 +192,50 @@ MiroFish团队长期招募全职/实习，如果你对多Agent应用感兴趣，
 
 MiroFish 的仿真引擎由 **[OASIS](https://github.com/camel-ai/oasis)** 驱动，我们衷心感谢 CAMEL-AI 团队的开源贡献！
 
+---
+
+## 🧠 Nyne.ai Real-People Integration (MichaelFanous2 fork)
+
+This fork extends MiroFish with **population-based casting using real people** enriched via [Nyne.ai](https://nyne.ai). Instead of LLM-fabricated synthetic personas, agents are built from real career data, verified posts, and grounded opinions.
+
+### What changed
+
+| Layer | Change |
+|-------|--------|
+| **Backend — new** | `services/nyne/` — Nyne API client, cast assembler, enrichment pipeline, opinion extractor |
+| **Backend — new** | `services/persona/real_persona_builder.py` — maps Nyne data → `OasisAgentProfile` |
+| **Backend — modified** | `simulation_manager.py` — real-people pipeline, grounding report, new status stages |
+| **Backend — modified** | `api/simulation.py` — 8 new endpoints (additive; zero existing endpoints changed) |
+| **Backend — modified** | `config.py` — Nyne API credentials block |
+| **Frontend — new** | `Step2CastAssembly.vue` — stakeholder group generation, curation, CSV upload |
+| **Frontend — modified** | `Step2EnvSetup.vue` — enrichment progress card, grounding report display |
+| **Frontend — modified** | `api/simulation.js` — 9 new API client functions |
+| **Docs** | `NYNE_INTEGRATION.md` — full architecture, design decisions, wiring checklist |
+
+### New workflow (real-people mode)
+
+```
+Upload document → Build graph → [NEW] Assemble Cast → Enrich via Nyne
+  → Extract real opinions → Build grounded personas → Run OASIS simulation
+```
+
+### Additional env vars required
+
+```env
+NYNE_API_KEY=your_nyne_api_key
+NYNE_API_SECRET=your_nyne_api_secret
+```
+
+### What still needs wiring
+
+- Insert `Step2CastAssembly.vue` into the parent wizard step flow (`App.vue`)
+- Pass `useRealPeople=true` prop into `Step2EnvSetup.vue` after cast is approved
+- End-to-end test with a live Nyne API key
+
+See **[NYNE_INTEGRATION.md](./NYNE_INTEGRATION.md)** for the full architecture, data flow, and remaining checklist.
+
+---
+
 ## 📈 项目统计
 
 <a href="https://www.star-history.com/#666ghj/MiroFish&type=date&legend=top-left">
