@@ -158,40 +158,19 @@ Every opinion is labeled with how much real-post evidence supports it:
 
 ## What Remains To Wire Up
 
-These are the only remaining steps before the full flow is functional end-to-end:
+### ✅ ~~Wire `Step2CastAssembly.vue` into the wizard~~ — Done
 
-### 1. Wire `Step2CastAssembly.vue` into the parent wizard
+`SimulationView.vue` now manages two sub-phases. See "What Was Wired" below.
 
-In `App.vue` (or whatever manages step transitions), insert `Step2CastAssembly` as a new step between the graph-building step and `Step2EnvSetup`. Pass `simulationId` as a prop and listen for `cast-approved`:
+### ✅ ~~Pass `useRealPeople` into `Step2EnvSetup`~~ — Done
 
-```vue
-<Step2CastAssembly
-  v-if="currentStep === 'cast'"
-  :simulationId="simulationId"
-  :eventDescription="projectData.event_description"
-  @cast-approved="onCastApproved"
-/>
-```
+`useRealPeople` is a reactive ref in `SimulationView.vue`, set to `true` on cast approval.
 
-```js
-const onCastApproved = () => {
-  useRealPeople.value = true
-  currentStep.value = 'env-setup'
-}
-```
+### ✅ ~~Verify `SimulationConfigGenerator` patching~~ — Done
 
-### 2. Pass `useRealPeople` prop into `Step2EnvSetup`
+All `AgentActivityConfig` fields match exactly. See "What Was Wired" below.
 
-```vue
-<Step2EnvSetup
-  :simulationId="simulationId"
-  :projectData="projectData"
-  :useRealPeople="useRealPeople"
-  ...
-/>
-```
-
-### 3. Test with a live Nyne API key
+### 1. Test with a live Nyne API key ← only remaining step
 
 Set in your `.env`:
 ```env
@@ -199,11 +178,40 @@ NYNE_API_KEY=your_nyne_api_key
 NYNE_API_SECRET=your_nyne_api_secret
 ```
 
-The enrichment pipeline is written against the live Nyne API contract (matching `nyne_enrich/nyne_batch_enrich.py`) but has not yet been run end-to-end against the production API.
+The enrichment pipeline is written against the live Nyne API contract (matching `nyne_enrich/nyne_batch_enrich.py`) but has not yet been run end-to-end against production.
 
-### 4. Verify SimulationConfigGenerator patching
+---
 
-In `simulation_manager.py`, `prepare_simulation_real_people()` attaches private attributes (`_activity_level`, `_stance`, `_sentiment_bias`, `_influence_weight`) to `OasisAgentProfile` objects and then patches them into `AgentActivityConfig` objects after config generation. Verify this works with the version of `SimulationConfigGenerator` in your environment.
+## What Was Wired
+
+### `SimulationView.vue` — two sub-phases
+
+`SimulationView.vue` (the `/simulation/:id` route) manages two sub-phases:
+
+| `simPhase` | Component shown | Triggered by |
+|------------|-----------------|--------------|
+| `'cast'` (default) | `Step2CastAssembly` | Arriving at `/simulation/:id` |
+| `'prepare'` | `Step2EnvSetup` | User approves cast or clicks Skip |
+
+Navigation:
+- **Approve cast** → `useRealPeople=true`, `simPhase='prepare'`
+- **Skip (synthetic mode)** → `useRealPeople=false`, `simPhase='prepare'`
+- **Back from prepare** → returns to `simPhase='cast'` (stays in same route)
+- **Back from cast** → navigates to `/process/:projectId`
+
+The `eventDescription` passed to `Step2CastAssembly` is pulled from `simulation.simulation_requirement` (loaded on mount).
+
+### `AgentActivityConfig` patching — verified correct
+
+All private `_` attributes attached by `real_persona_builder.py` map to real fields in `AgentActivityConfig`:
+
+| Attribute | Field | Type |
+|-----------|-------|------|
+| `_activity_level` | `activity_level` | `float` |
+| `_sentiment_bias` | `sentiment_bias` | `float` |
+| `_stance` | `stance` | `str` |
+| `_active_hours` | `active_hours` | `List[int]` |
+| `_influence_weight` | `influence_weight` | `float` |
 
 ---
 
@@ -235,6 +243,8 @@ MiroFish/
     └── src/
         ├── api/
         │   └── simulation.js                    ← modified (9 functions added)
+        ├── views/
+        │   └── SimulationView.vue               ← modified (cast→prepare sub-phases)
         └── components/
             ├── Step2CastAssembly.vue            ← NEW
             └── Step2EnvSetup.vue                ← modified

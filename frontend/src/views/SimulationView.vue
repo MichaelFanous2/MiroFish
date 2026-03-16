@@ -23,7 +23,7 @@
       <div class="header-right">
         <div class="workflow-step">
           <span class="step-num">Step 2/5</span>
-          <span class="step-name">环境搭建</span>
+          <span class="step-name">{{ simPhase === 'cast' ? 'Cast Assembly' : '环境搭建' }}</span>
         </div>
         <div class="step-divider"></div>
         <span class="status-indicator" :class="statusClass">
@@ -46,13 +46,28 @@
         />
       </div>
 
-      <!-- Right Panel: Step2 环境搭建 -->
+      <!-- Right Panel: Cast Assembly (simPhase = 'cast') or Env Setup (simPhase = 'prepare') -->
       <div class="panel-wrapper right" :style="rightPanelStyle">
+        <!-- Step 2a: Cast Assembly — assemble real stakeholder groups via Nyne -->
+        <Step2CastAssembly
+          v-if="simPhase === 'cast'"
+          :simulationId="currentSimulationId"
+          :eventDescription="eventDescription"
+          :systemLogs="systemLogs"
+          @go-back="handleGoBack"
+          @cast-approved="handleCastApproved"
+          @skip="handleSkipCast"
+          @add-log="addLog"
+        />
+
+        <!-- Step 2b: Env Setup — persona build + simulation config generation -->
         <Step2EnvSetup
+          v-else-if="simPhase === 'prepare'"
           :simulationId="currentSimulationId"
           :projectData="projectData"
           :graphData="graphData"
           :systemLogs="systemLogs"
+          :useRealPeople="useRealPeople"
           @go-back="handleGoBack"
           @next-step="handleNextStep"
           @add-log="addLog"
@@ -67,6 +82,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
+import Step2CastAssembly from '../components/Step2CastAssembly.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
@@ -82,13 +98,27 @@ const props = defineProps({
 // Layout State
 const viewMode = ref('split')
 
+// Sub-phase within the simulation setup route:
+//   'cast'    — Step2CastAssembly (stakeholder group generation + enrichment)
+//   'prepare' — Step2EnvSetup (persona build + sim config generation)
+const simPhase = ref('cast')
+const useRealPeople = ref(false)
+
 // Data State
 const currentSimulationId = ref(route.params.simulationId)
+const simulationData = ref(null)   // raw simulation record (holds simulation_requirement)
 const projectData = ref(null)
 const graphData = ref(null)
 const graphLoading = ref(false)
 const systemLogs = ref([])
 const currentStatus = ref('processing') // processing | completed | error
+
+// Event description passed to cast assembler
+const eventDescription = computed(() =>
+  simulationData.value?.simulation_requirement
+  || projectData.value?.simulation_requirement
+  || ''
+)
 
 // --- Computed Layout Styles ---
 const leftPanelStyle = computed(() => {
@@ -137,12 +167,32 @@ const toggleMaximize = (target) => {
 }
 
 const handleGoBack = () => {
-  // 返回到 process 页面
-  if (projectData.value?.project_id) {
-    router.push({ name: 'Process', params: { projectId: projectData.value.project_id } })
+  if (simPhase.value === 'prepare') {
+    // Go back to cast assembly instead of leaving the route
+    simPhase.value = 'cast'
+    addLog('返回 Cast Assembly')
   } else {
-    router.push('/')
+    // Go back to graph build (process page)
+    if (projectData.value?.project_id) {
+      router.push({ name: 'Process', params: { projectId: projectData.value.project_id } })
+    } else {
+      router.push('/')
+    }
   }
+}
+
+// Cast approved — move on to persona prep with real-people mode enabled
+const handleCastApproved = () => {
+  addLog('Cast approved — starting persona preparation (real-people mode)')
+  useRealPeople.value = true
+  simPhase.value = 'prepare'
+}
+
+// Skip cast assembly and use synthetic mode
+const handleSkipCast = () => {
+  addLog('Skipping cast assembly — using synthetic persona mode')
+  useRealPeople.value = false
+  simPhase.value = 'prepare'
 }
 
 const handleNextStep = (params = {}) => {
@@ -243,7 +293,8 @@ const loadSimulationData = async () => {
     const simRes = await getSimulation(currentSimulationId.value)
     if (simRes.success && simRes.data) {
       const simData = simRes.data
-      
+      simulationData.value = simData
+
       // 获取 project 信息
       if (simData.project_id) {
         const projRes = await getProject(simData.project_id)

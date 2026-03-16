@@ -188,6 +188,10 @@
               Nyne will enrich {{ realMemberCount }} real people.
               {{ syntheticMemberCount > 0 ? `${syntheticMemberCount} slots will use synthetic fallback.` : '' }}
             </p>
+            <div class="secondary-actions">
+              <button class="btn-secondary" @click="emit('go-back')">← Back to Graph</button>
+              <button class="btn-secondary" @click="emit('skip')">Skip — use synthetic mode →</button>
+            </div>
           </div>
         </div>
       </div>
@@ -251,7 +255,7 @@ const props = defineProps({
   documentText: { type: String, default: '' },
 })
 
-const emit = defineEmits(['cast-approved', 'update:phase'])
+const emit = defineEmits(['cast-approved', 'skip', 'go-back', 'add-log', 'update:phase'])
 
 // State
 const phase = ref(0)
@@ -643,6 +647,22 @@ function enrichmentChipClass(status) {
 .btn-approve:hover:not(:disabled) { background: linear-gradient(135deg, #1976d2, #3949ab); }
 .btn-approve:disabled { opacity: 0.4; cursor: not-allowed; }
 .approve-note { font-size: 11px; color: #888; }
+.secondary-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+.btn-secondary {
+  background: transparent;
+  color: #aaa;
+  border: 1px solid #333;
+  padding: 7px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.btn-secondary:hover { color: #fff; border-color: #666; }
 
 .enrichment-grid {
   display: flex;
