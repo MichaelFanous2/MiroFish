@@ -615,16 +615,27 @@ class SimulationManager:
                 f"{len(real_members)} real, {len(synthetic_members)} synthetic fallback"
             )
 
-            # ── Stage 2: Enrich real members ───────────────────────────────
+            if not all_members:
+                raise ValueError("Cast is empty — add people to at least one group before approving")
+
+            if not real_members:
+                logger.warning(
+                    "No real members in cast — all slots are synthetic fallback. "
+                    "Skipping Nyne enrichment and running synthetic-only pipeline."
+                )
+
+            # ── Stage 2: Enrich real members (skip if all synthetic) ───────
             state.status = SimulationStatus.ENRICHING
             self._save_simulation_state(state)
             if progress_callback:
-                progress_callback("enriching", 0, f"Enriching {len(real_members)} people via Nyne...")
+                msg = (f"Enriching {len(real_members)} people via Nyne..."
+                       if real_members else "All slots synthetic — skipping Nyne enrichment")
+                progress_callback("enriching", 0, msg)
 
             pipeline = EnrichmentPipeline(nyne, sim_dir)
 
             enrichment_results = pipeline.run(
-                members=real_members,
+                members=real_members,  # empty list is handled gracefully by pipeline
                 progress_callback=lambda done, total, name, status: (
                     progress_callback("enriching", int(done / max(total, 1) * 100), name)
                     if progress_callback else None

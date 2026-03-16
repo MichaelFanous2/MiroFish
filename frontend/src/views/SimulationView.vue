@@ -295,13 +295,25 @@ const loadSimulationData = async () => {
       const simData = simRes.data
       simulationData.value = simData
 
+      // Restore real-people mode and phase from saved backend state.
+      // This ensures correct UI on navigation back to this route after
+      // cast has already been approved (fixes bugs #2 and #3).
+      if (simData.use_real_people || simData.groups_approved) {
+        useRealPeople.value = true
+        simPhase.value = 'prepare'
+        addLog('Resumed in real-people mode (cast previously approved)')
+      } else if (simData.groups_generated) {
+        // Groups generated but not yet approved — resume cast assembly
+        simPhase.value = 'cast'
+      }
+
       // 获取 project 信息
       if (simData.project_id) {
         const projRes = await getProject(simData.project_id)
         if (projRes.success && projRes.data) {
           projectData.value = projRes.data
           addLog(`项目加载成功: ${projRes.data.project_id}`)
-          
+
           // 获取 graph 数据
           if (projRes.data.graph_id) {
             await loadGraph(projRes.data.graph_id)

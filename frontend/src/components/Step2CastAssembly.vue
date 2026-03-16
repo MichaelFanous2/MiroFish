@@ -302,9 +302,12 @@ onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
 })
 
+let statusErrorCount = 0
+
 async function refreshStatus() {
   try {
     const res = await getGroupsStatus(props.simulationId)
+    statusErrorCount = 0  // reset on success
     const data = res.data?.data
     if (!data) return
     if (data.groups?.length > 0) {
@@ -323,7 +326,16 @@ async function refreshStatus() {
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
       emit('cast-approved', { simulationId: props.simulationId, groundingReport: data.grounding_report })
     }
-  } catch {}
+  } catch (err) {
+    statusErrorCount++
+    console.warn(`[CastAssembly] groups/status poll failed (attempt ${statusErrorCount}):`, err)
+    if (statusErrorCount >= 5) {
+      // 5 consecutive failures — surface an error instead of hanging silently
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+      error.value = `Lost contact with enrichment pipeline after ${statusErrorCount} attempts. Check backend logs.`
+      emit('add-log', `[CastAssembly] Enrichment status polling failed: ${err.message}`)
+    }
+  }
 }
 
 async function handleGenerateGroups() {

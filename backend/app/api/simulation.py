@@ -2984,8 +2984,9 @@ def approve_groups(simulation_id: str):
             assembler.fill_synthetic_fallback(group)
         save_groups(groups, sim_dir)
 
-        # Mark approved
+        # Mark approved and set real-people mode on state (fixes bugs #5, #9)
         state.groups_approved = True
+        state.use_real_people = True
         manager._save_simulation_state(state)
 
         # Run full pipeline in background thread
@@ -3019,6 +3020,8 @@ def approve_groups(simulation_id: str):
                 "total_members": total_members,
                 "real_members": real_count,
                 "synthetic_fallback": total_members - real_count,
+                "use_real_people": True,
+                "groups_approved": True,
             }
         })
 

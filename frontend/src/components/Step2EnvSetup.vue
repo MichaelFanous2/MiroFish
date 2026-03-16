@@ -911,7 +911,7 @@ const startPrepareSimulation = async () => {
 }
 
 const startPolling = () => {
-  pollTimer = setInterval(pollPrepareStatus, 2000)
+  pollTimer = setInterval(pollPrepareStatus, 3000)
 }
 
 const stopPolling = () => {
@@ -1259,10 +1259,23 @@ onMounted(() => {
   if (props.simulationId) {
     addLog('Step2 环境搭建初始化')
     if (props.useRealPeople) {
-      addLog('Real-people mode detected — monitoring enrichment pipeline...')
+      // Real-people mode: the backend pipeline is already running (started by
+      // approveGroups). Do NOT call prepareSimulation() — that would kick off
+      // a second conflicting synthetic pipeline. Instead just:
+      //  1. Poll enrichment progress (groups/status)
+      //  2. Poll prepare status so phase/progress bar reflects backend stages
+      //  3. Poll profiles + config as they become ready
+      addLog('Real-people mode — monitoring enrichment pipeline (started by cast approval)...')
       startEnrichmentPolling()
+      // Mark phase 1 immediately (pipeline is already running)
+      phase.value = 1
+      // Still poll prepare status so progress bar / stage labels update
+      startPolling()
+      // Begin polling profiles and config (they'll appear as pipeline completes)
+      startProfilesPolling()
+    } else {
+      startPrepareSimulation()
     }
-    startPrepareSimulation()
   }
 })
 
