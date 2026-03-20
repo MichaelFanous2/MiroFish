@@ -139,6 +139,60 @@
           <div class="workflow-divider"></div>
         </div>
 
+        <!-- Grounding Report — real-people simulations only -->
+        <div class="grounding-panel" v-if="isComplete && groundingReport">
+          <div class="grounding-header">
+            <span class="grounding-title">Grounding Report</span>
+            <div class="grounding-score-badge">
+              <span class="score-label">Overall</span>
+              <span class="score-value">{{ Math.round(groundingReport.overall_grounding * 100) }}%</span>
+            </div>
+            <span class="synthetic-note" v-if="groundingReport.synthetic_fallback_count > 0">
+              {{ groundingReport.synthetic_fallback_count }} synthetic
+            </span>
+          </div>
+
+          <div class="grounding-groups">
+            <div
+              v-for="(group, gIdx) in groundingReport.groups"
+              :key="gIdx"
+              class="grounding-group"
+            >
+              <div class="grounding-group-header" @click="toggleGroundingGroup(gIdx)">
+                <span class="group-name">{{ group.name }}</span>
+                <span class="group-count">{{ group.members?.length || 0 }} members</span>
+                <svg class="group-chevron" :class="{ 'is-open': groundingExpanded[gIdx] }" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </div>
+
+              <div class="grounding-members" v-show="groundingExpanded[gIdx]">
+                <div v-for="(member, mIdx) in group.members" :key="mIdx" class="grounding-member">
+                  <div class="member-row">
+                    <span
+                      class="gl-badge"
+                      :style="{ background: groundingLevelColor(member.grounding_level) }"
+                    >{{ groundingLevelLabel(member.grounding_level) }}</span>
+                    <span class="member-name">{{ member.name }}</span>
+                    <span class="member-stance" v-if="member.stance">{{ member.stance }}</span>
+                    <span class="member-posts" v-if="member.real_posts_found">{{ member.real_posts_found }}p</span>
+                  </div>
+                  <div class="member-citations" v-if="member.citations?.length">
+                    <a
+                      v-for="(url, cIdx) in member.citations.slice(0, 3)"
+                      :key="cIdx"
+                      :href="url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="citation-link"
+                    >Post {{ cIdx + 1 }} ↗</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="workflow-timeline">
           <TransitionGroup name="timeline-item">
             <div 
@@ -393,6 +447,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { getAgentLog, getConsoleLog } from '../api/report'
+import { getGroundingReport } from '../api/simulation'
 
 const router = useRouter()
 
@@ -428,6 +483,34 @@ const leftPanel = ref(null)
 const rightPanel = ref(null)
 const logContent = ref(null)
 const showRawResult = reactive({})
+
+// Grounding report state
+const groundingReport = ref(null)
+const groundingExpanded = ref({})
+
+const loadGroundingReport = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await getGroundingReport(props.simulationId)
+    if (res?.data?.mode === 'real_people') {
+      groundingReport.value = res.data
+    }
+  } catch (_) {
+    // grounding report is optional — synthetic simulations won't have one
+  }
+}
+
+const toggleGroundingGroup = (idx) => {
+  groundingExpanded.value = { ...groundingExpanded.value, [idx]: !groundingExpanded.value[idx] }
+}
+
+const groundingLevelColor = (level) => {
+  return { high: '#4CAF50', medium: '#FF9800', low: '#FF5722', inferred: '#9E9E9E' }[level] || '#9E9E9E'
+}
+
+const groundingLevelLabel = (level) => {
+  return { high: 'HIGH', medium: 'MED', low: 'LOW', inferred: 'INF' }[level] || '?'
+}
 
 // Toggle functions
 const toggleRawResult = (timestamp, event) => {
@@ -2180,6 +2263,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopPolling()
+})
+
+watch(isComplete, (done) => {
+  if (done) loadGroundingReport()
 })
 
 watch(() => props.reportId, (newId) => {
@@ -5147,4 +5234,178 @@ watch(() => props.reportId, (newId) => {
 .log-msg.error { color: #EF5350; }
 .log-msg.warning { color: #FFA726; }
 .log-msg.success { color: #66BB6A; }
+
+/* Grounding Report Panel */
+.grounding-panel {
+  margin: 0 12px 12px;
+  border: 1px solid #C8E6C9;
+  border-radius: 8px;
+  background: #F9FBF9;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.grounding-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #C8E6C9;
+  background: #E8F5E9;
+}
+
+.grounding-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #2E7D32;
+  flex: 1;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.grounding-score-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #4CAF50;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.score-label {
+  opacity: 0.8;
+  font-size: 10px;
+}
+
+.synthetic-note {
+  font-size: 10px;
+  color: #888;
+  font-style: italic;
+}
+
+.grounding-groups {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.grounding-group {
+  border-bottom: 1px solid #EEF5EE;
+}
+
+.grounding-group:last-child {
+  border-bottom: none;
+}
+
+.grounding-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.grounding-group-header:hover {
+  background: #F1F8F1;
+}
+
+.group-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  flex: 1;
+}
+
+.group-count {
+  font-size: 10px;
+  color: #999;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.group-chevron {
+  color: #AAA;
+  transition: transform 0.2s;
+}
+
+.group-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.grounding-members {
+  padding: 4px 12px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.grounding-member {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gl-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  min-width: 28px;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.3px;
+}
+
+.member-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #222;
+  flex: 1;
+}
+
+.member-stance {
+  font-size: 10px;
+  color: #777;
+  font-style: italic;
+}
+
+.member-posts {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #AAA;
+}
+
+.member-citations {
+  display: flex;
+  gap: 4px;
+  padding-left: 34px;
+  flex-wrap: wrap;
+}
+
+.citation-link {
+  font-size: 10px;
+  color: #1565C0;
+  text-decoration: none;
+  padding: 1px 6px;
+  background: #E3F2FD;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+  transition: background 0.15s;
+}
+
+.citation-link:hover {
+  background: #BBDEFB;
+  text-decoration: underline;
+}
 </style>
