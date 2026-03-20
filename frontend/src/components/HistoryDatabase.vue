@@ -33,17 +33,22 @@
         <div class="card-header">
           <span class="card-id">{{ formatSimulationId(project.simulation_id) }}</span>
           <div class="card-status-icons">
-            <span 
-              class="status-icon" 
+            <span
+              v-if="project.use_real_people"
+              class="real-people-badge"
+              title="Real People — powered by Nyne.ai"
+            >REAL</span>
+            <span
+              class="status-icon"
               :class="{ available: project.project_id, unavailable: !project.project_id }"
               title="图谱构建"
             >◇</span>
-            <span 
-              class="status-icon available" 
+            <span
+              class="status-icon available"
               title="环境搭建"
             >◈</span>
-            <span 
-              class="status-icon" 
+            <span
+              class="status-icon"
               :class="{ available: project.report_id, unavailable: !project.report_id }"
               title="分析报告"
             >◆</span>
@@ -117,6 +122,7 @@
                 <span class="modal-progress" :class="getProgressClass(selectedProject)">
                   <span class="status-dot">●</span> {{ formatRounds(selectedProject) }}
                 </span>
+                <span v-if="selectedProject.use_real_people" class="modal-real-badge">REAL PEOPLE</span>
                 <span class="modal-create-time">{{ formatDate(selectedProject.created_at) }} {{ formatTime(selectedProject.created_at) }}</span>
               </div>
               <button class="modal-close" @click="closeModal">×</button>
@@ -1336,5 +1342,29 @@ onUnmounted(() => {
   letter-spacing: 0.3px;
   text-align: center;
   line-height: 1.5;
+}
+
+/* Real-people badge — card header */
+.real-people-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: #2E7D32;
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+/* Real-people badge — modal header */
+.modal-real-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: #2E7D32;
+  padding: 3px 8px;
+  border-radius: 4px;
 }
 </style>
