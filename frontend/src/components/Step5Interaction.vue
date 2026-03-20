@@ -239,6 +239,47 @@
                 <p>{{ selectedAgent.bio }}</p>
               </div>
             </div>
+
+            <!-- Real-person evidence panel — shown when grounding data exists -->
+            <div v-if="showFullProfile && selectedAgentGrounding" class="real-person-panel">
+              <div class="rp-header">
+                <span class="rp-title">Real Person</span>
+                <span class="rp-gl-badge" :style="{ background: groundingLevelColor(selectedAgentGrounding.grounding_level) }">
+                  {{ groundingLevelLabel(selectedAgentGrounding.grounding_level) }}
+                </span>
+                <span class="rp-posts" v-if="selectedAgentGrounding.real_posts_found">
+                  {{ selectedAgentGrounding.real_posts_found }} posts
+                </span>
+              </div>
+              <div class="rp-body">
+                <div class="rp-row" v-if="selectedAgentGrounding.stance">
+                  <span class="rp-label">Stance</span>
+                  <span class="rp-value stance" :class="'stance-' + selectedAgentGrounding.stance">
+                    {{ selectedAgentGrounding.stance }}
+                  </span>
+                  <span class="rp-conf" v-if="selectedAgentGrounding.stance_confidence">
+                    {{ Math.round(selectedAgentGrounding.stance_confidence * 100) }}%
+                  </span>
+                </div>
+                <div class="rp-row" v-if="selectedAgentGrounding.group_name">
+                  <span class="rp-label">Group</span>
+                  <span class="rp-value">{{ selectedAgentGrounding.group_name }}</span>
+                </div>
+                <div class="rp-citations" v-if="selectedAgentGrounding.citations?.length">
+                  <span class="rp-label">Evidence</span>
+                  <div class="rp-links">
+                    <a
+                      v-for="(url, cIdx) in selectedAgentGrounding.citations.slice(0, 3)"
+                      :key="cIdx"
+                      :href="url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="rp-link"
+                    >Post {{ cIdx + 1 }} ↗</a>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- Chat Messages -->
@@ -413,7 +454,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
-import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulation'
+import { interviewAgents, getSimulationProfilesRealtime, getGroundingReport } from '../api/simulation'
 
 const props = defineProps({
   reportId: String,
@@ -451,6 +492,40 @@ const generatedSections = ref({})
 const collapsedSections = ref(new Set())
 const currentSectionIndex = ref(null)
 const profiles = ref([])
+
+// Grounding report (real-people simulations only)
+const groundingReport = ref(null)
+
+const loadGroundingReport = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await getGroundingReport(props.simulationId)
+    if (res?.data?.mode === 'real_people') {
+      groundingReport.value = res.data
+    }
+  } catch (_) {
+    // optional — synthetic simulations won't have one
+  }
+}
+
+const selectedAgentGrounding = computed(() => {
+  if (!selectedAgent.value || !groundingReport.value) return null
+  const agentName = selectedAgent.value.name
+  for (const group of groundingReport.value.groups || []) {
+    for (const member of group.members || []) {
+      if (member.name === agentName) return { ...member, group_name: group.name }
+    }
+  }
+  return null
+})
+
+const groundingLevelColor = (level) => {
+  return { high: '#4CAF50', medium: '#FF9800', low: '#FF5722', inferred: '#9E9E9E' }[level] || '#9E9E9E'
+}
+
+const groundingLevelLabel = (level) => {
+  return { high: 'HIGH', medium: 'MED', low: 'LOW', inferred: 'INF' }[level] || '?'
+}
 
 // Helper Methods
 const isSectionCompleted = (sectionIndex) => {
@@ -938,6 +1013,7 @@ onMounted(() => {
   addLog('Step5 深度互动初始化')
   loadReportData()
   loadProfiles()
+  loadGroundingReport()
   document.addEventListener('click', handleClickOutside)
 })
 
@@ -954,6 +1030,7 @@ watch(() => props.reportId, (newId) => {
 watch(() => props.simulationId, (newId) => {
   if (newId) {
     loadProfiles()
+    loadGroundingReport()
   }
 }, { immediate: true })
 </script>
@@ -2570,5 +2647,112 @@ watch(() => props.simulationId, (newId) => {
   border: none;
   border-top: 1px solid #E5E7EB;
   margin: 24px 0;
+}
+
+/* Real-person evidence panel */
+.real-person-panel {
+  border-top: 1px solid #C8E6C9;
+  padding: 10px 16px 12px;
+  background: #F9FBF9;
+}
+
+.rp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.rp-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #2E7D32;
+  font-family: 'JetBrains Mono', monospace;
+  flex: 1;
+}
+
+.rp-gl-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.rp-posts {
+  font-size: 10px;
+  color: #999;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.rp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.rp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rp-label {
+  font-size: 10px;
+  color: #AAA;
+  font-weight: 600;
+  min-width: 48px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.rp-value {
+  font-size: 11px;
+  color: #333;
+  font-weight: 500;
+}
+
+.rp-conf {
+  font-size: 10px;
+  color: #BBB;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.rp-value.stance { font-weight: 700; }
+.rp-value.stance-supportive { color: #2E7D32; }
+.rp-value.stance-opposing { color: #C62828; }
+.rp-value.stance-neutral { color: #F57F17; }
+.rp-value.stance-conflicted { color: #6A1B9A; }
+
+.rp-citations {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.rp-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rp-link {
+  font-size: 10px;
+  color: #1565C0;
+  text-decoration: none;
+  padding: 1px 6px;
+  background: #E3F2FD;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+  transition: background 0.15s;
+}
+
+.rp-link:hover {
+  background: #BBDEFB;
+  text-decoration: underline;
 }
 </style>
